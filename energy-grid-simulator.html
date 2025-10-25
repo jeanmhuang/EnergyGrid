@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energy Grid Simulator - Climate Education Game</title>
+    
+    <!-- Load React from CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
+            background-color: #1a1a1a;
+        }
+        #root {
+            width: 100%;
+            min-height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        const EnergyGridSimulator = () => {
+          const [gameState, setGameState] = useState({
+            day: 1,
+            hour: 6,
+            minute: 0,
+            budget: 500000,
+            powerPlants: [{ id: 1, type: 'coal', x: 100, y: 20 }],
+            demand: 500,
+            weather: 'sunny',
+            totalCO2: 0,
+            blackoutTime: 0,
+            gameSpeed: 1,
+            isRunning: true,
+            showTutorial: true
+          });
+
+          const [hoveredPlant, setHoveredPlant] = useState(null);
+          const gameLoopRef = useRef(null);
+
+          // Power source definitions
+          const powerSources = {
+            solar: { name: 'Solar', icon: '☀️', cost: 50000, capacity: 100, co2: 0, color: '#FFD700', buildTime: 0 },
+            wind: { name: 'Wind', icon: '💨', cost: 75000, capacity: 150, co2: 0, color: '#87CEEB', buildTime: 0 },
+            hydro: { name: 'Hydro', icon: '💧', cost: 100000, capacity: 200, co2: 0, color: '#1E90FF', buildTime: 0 },
+            nuclear: { name: 'Nuclear', icon: '⚛️', cost: 300000, capacity: 500, co2: 0, color: '#9370DB', buildTime: 2 },
+            battery: { name: 'Battery', icon: '🔋', cost: 60000, capacity: 200, co2: 0, color: '#32CD32', buildTime: 0 },
+            gas: { name: 'Gas', icon: '⚡', cost: 40000, capacity: 200, co2: 400, color: '#FF8C00', buildTime: 0 },
+            coal: { name: 'Coal', icon: '🏭', cost: 30000, capacity: 300, co2: 900, color: '#696969', buildTime: 0 }
+          };
+
+          // Calculate solar output based on time
+          const getSolarOutput = (hour, minute, weather) => {
+            const timeOfDay = hour + minute / 60;
+            let sunIntensity = 0;
+            
+            if (timeOfDay >= 6 && timeOfDay <= 18) {
+              const noon = 12;
+              const distanceFromNoon = Math.abs(timeOfDay - noon);
+              sunIntensity = Math.max(0, 1 - (distanceFromNoon / 6));
+            }
+            
+            const weatherMultiplier = {
+              sunny: 1.0,
+              cloudy: 0.3,
+              rainy: 0.1,
+              windy: 0.8,
+              calm: 1.0
+            }[weather] || 0.5;
+            
+            return sunIntensity * weatherMultiplier;
+          };
+
+          // Calculate wind output
+          const getWindOutput = (weather) => {
+            const baseWind = Math.random() * 0.4 + 0.3; // 30-70% base
+            const weatherMultiplier = {
+              sunny: 0.8,
+              cloudy: 1.0,
+              rainy: 1.2,
+              windy: 1.5,
+              calm: 0.2
+            }[weather] || 1.0;
+            
+            return Math.min(1, baseWind * weatherMultiplier);
+          };
+
+          // Calculate demand based on time and weather
+          const calculateDemand = (hour, weather, day) => {
+            let baseDemand = 500;
+            
+            // Time-based demand
+            if ((hour >= 6 && hour <= 9) || (hour >= 17 && hour <= 21)) {
+              baseDemand = 800; // Peak hours
+            } else if (hour >= 9 && hour <= 17) {
+              baseDemand = 650; // Standard hours
+            } else {
+              baseDemand = 400; // Low hours
+            }
+            
+            // Weather effects
+            if (weather === 'sunny' && hour >= 12 && hour <= 16) {
+              baseDemand += 200; // AC usage
+            } else if (weather === 'rainy') {
+              baseDemand += 50; // More indoor activity
+            }
+            
+            // Add some randomness
+            baseDemand += (Math.random() - 0.5) * 100;
+            
+            // Increase demand slightly each day
+            baseDemand += day * 20;
+            
+            return Math.max(300, baseDemand);
+          };
+
+          // Calculate total supply
+          const calculateSupply = () => {
+            let totalSupply = 0;
+            let totalCO2 = 0;
+            let batteryCharge = 0;
+
+            gameState.powerPlants.forEach(plant => {
+              const source = powerSources[plant.type];
+              let output = 0;
+
+              if (plant.type === 'solar') {
+                output = source.capacity * getSolarOutput(gameState.hour, gameState.minute, gameState.weather);
+              } else if (plant.type === 'wind') {
+                output = source.capacity * getWindOutput(gameState.weather);
+              } else if (plant.type === 'battery') {
+                batteryCharge += source.capacity;
+                output = 0; // Batteries don't generate, they store
+              } else if (plant.type === 'hydro') {
+                output = source.capacity * 0.9;
+              } else if (plant.type === 'nuclear') {
+                output = source.capacity * 0.95;
+              } else {
+                output = source.capacity; // Gas and coal always on-demand
+              }
+
+              totalSupply += output;
+              totalCO2 += (output / 1000) * source.co2; // CO2 per MWh
+            });
+
+            return { supply: totalSupply, co2: totalCO2, batteryCapacity: batteryCharge };
+          };
+
+          // Game loop
+          useEffect(() => {
+            if (!gameState.isRunning) return;
+
+            gameLoopRef.current = setInterval(() => {
+              setGameState(prev => {
+                let newMinute = prev.minute + 10;
+                let newHour = prev.hour;
+                let newDay = prev.day;
+                let newWeather = prev.weather;
+
+                if (newMinute >= 60) {
+                  newMinute = 0;
+                  newHour += 1;
+                }
+
+                if (newHour >= 24) {
+                  newHour = 0;
+                  newDay += 1;
+                  
+                  // Change weather at day change
+                  const weathers = ['sunny', 'cloudy', 'rainy', 'windy', 'calm'];
+                  newWeather = weathers[Math.floor(Math.random() * weathers.length)];
+                }
+
+                const newDemand = calculateDemand(newHour, newWeather, newDay);
+                const { supply, co2 } = calculateSupply();
+                
+                let newBlackoutTime = prev.blackoutTime;
+                if (supply < newDemand * 0.5) {
+                  newBlackoutTime += 0.17; // 10 minutes in hours
+                }
+
+                return {
+                  ...prev,
+                  minute: newMinute,
+                  hour: newHour,
+                  day: newDay,
+                  weather: newWeather,
+                  demand: newDemand,
+                  totalCO2: prev.totalCO2 + co2,
+                  blackoutTime: newBlackoutTime
+                };
+              });
+            }, 1000); // Update every second
+
+            return () => clearInterval(gameLoopRef.current);
+          }, [gameState.isRunning, gameState.hour, gameState.minute]);
+
+          // Handle building power plant
+          const buildPowerPlant = (type) => {
+            const source = powerSources[type];
+            
+            if (gameState.budget < source.cost) {
+              alert(`Not enough budget! ${source.name} costs $${(source.cost / 1000).toFixed(0)}k`);
+              return;
+            }
+
+            const newPlant = {
+              id: Date.now(),
+              type,
+              x: Math.random() * 500 + 50,
+              y: Math.random() * 100 + 20
+            };
+
+            setGameState(prev => ({
+              ...prev,
+              budget: prev.budget - source.cost,
+              powerPlants: [...prev.powerPlants, newPlant],
+              showTutorial: false
+            }));
+          };
+
+          // Remove power plant
+          const removePowerPlant = (id) => {
+            setGameState(prev => ({
+              ...prev,
+              powerPlants: prev.powerPlants.filter(p => p.id !== id),
+              budget: prev.budget + 5000 // Small refund
+            }));
+          };
+
+          const { supply, co2, batteryCapacity } = calculateSupply();
+          const gridBalance = (supply / gameState.demand) * 100;
+          const gridStatus = gridBalance >= 90 ? 'stable' : gridBalance >= 75 ? 'warning' : 'critical';
+
+          // Sky gradient based on time
+          const getSkyGradient = () => {
+            const hour = gameState.hour;
+            if (hour >= 5 && hour < 7) return 'linear-gradient(180deg, #FF6B6B 0%, #FFA07A 50%, #FFD93D 100%)';
+            if (hour >= 7 && hour < 17) return 'linear-gradient(180deg, #87CEEB 0%, #B0E0E6 100%)';
+            if (hour >= 17 && hour < 19) return 'linear-gradient(180deg, #FF6B6B 0%, #9B59B6 50%, #2C3E50 100%)';
+            return 'linear-gradient(180deg, #0F2027 0%, #203A43 50%, #2C5364 100%)';
+          };
+
+          const weatherIcons = {
+            sunny: '☀️',
+            cloudy: '☁️',
+            rainy: '🌧️',
+            windy: '💨',
+            calm: '😌'
+          };
+
+          const renewablePercent = gameState.powerPlants.filter(p => 
+            ['solar', 'wind', 'hydro', 'nuclear'].includes(p.type)
+          ).length / Math.max(1, gameState.powerPlants.length) * 100;
+
+          return (
+            <div style={{ fontFamily: 'Arial, sans-serif', backgroundColor: '#1a1a1a', color: '#fff', minHeight: '100vh', padding: '20px' }}>
+              {/* Header Stats */}
+              <div style={{ 
+                display: 'flex', 
+                justifyContent: 'space-between', 
+                padding: '15px', 
+                backgroundColor: '#2a2a2a', 
+                borderRadius: '10px',
+                marginBottom: '20px',
+                flexWrap: 'wrap',
+                gap: '10px'
+              }}>
+                <div>💰 Budget: <strong>${(gameState.budget / 1000).toFixed(0)}k</strong></div>
+                <div>📅 Day {gameState.day}/7</div>
+                <div>🕐 {String(gameState.hour).padStart(2, '0')}:{String(gameState.minute).padStart(2, '0')}</div>
+                <div>{weatherIcons[gameState.weather]} {gameState.weather}</div>
+                <div>🌱 Renewable: {renewablePercent.toFixed(0)}%</div>
+              </div>
+
+              {/* Tutorial */}
+              {gameState.showTutorial && (
+                <div style={{
+                  backgroundColor: '#4a4a00',
+                  padding: '15px',
+                  borderRadius: '10px',
+                  marginBottom: '20px',
+                  border: '2px solid #FFD700'
+                }}>
+                  <strong>📚 Tutorial:</strong> Click power sources from the Build Menu below to add them to your grid. 
+                  Balance renewable energy with reliable baseload power. Watch the day/night cycle affect solar output!
+                </div>
+              )}
+
+              {/* Sky Scene */}
+              <div style={{
+                background: getSkyGradient(),
+                borderRadius: '10px',
+                padding: '20px',
+                minHeight: '300px',
+                position: 'relative',
+                marginBottom: '20px',
+                overflow: 'hidden'
+              }}>
+                {/* Sun/Moon */}
+                <div style={{
+                  position: 'absolute',
+                  top: '20px',
+                  left: `${((gameState.hour + gameState.minute / 60) / 24) * 100}%`,
+                  transition: 'left 1s linear',
+                  fontSize: '40px'
+                }}>
+                  {gameState.hour >= 6 && gameState.hour < 18 ? '☀️' : '🌙'}
+                </div>
+
+                {/* Power Plants */}
+                <div style={{ paddingTop: '60px' }}>
+                  {gameState.powerPlants.map(plant => {
+                    const source = powerSources[plant.type];
+                    let output = 0;
+                    
+                    if (plant.type === 'solar') {
+                      output = source.capacity * getSolarOutput(gameState.hour, gameState.minute, gameState.weather);
+                    } else if (plant.type === 'wind') {
+                      output = source.capacity * getWindOutput(gameState.weather);
+                    } else if (plant.type === 'battery') {
+                      output = 0;
+                    } else if (plant.type === 'hydro') {
+                      output = source.capacity * 0.9;
+                    } else if (plant.type === 'nuclear') {
+                      output = source.capacity * 0.95;
+                    } else {
+                      output = source.capacity;
+                    }
+
+                    return (
+                      <div
+                        key={plant.id}
+                        onMouseEnter={() => setHoveredPlant(plant.id)}
+                        onMouseLeave={() => setHoveredPlant(null)}
+                        onClick={() => removePowerPlant(plant.id)}
+                        style={{
+                          display: 'inline-block',
+                          margin: '10px',
+                          padding: '15px',
+                          backgroundColor: hoveredPlant === plant.id ? '#444' : '#333',
+                          borderRadius: '10px',
+                          border: `3px solid ${source.color}`,
+                          cursor: 'pointer',
+                          transition: 'all 0.3s',
+                          transform: hoveredPlant === plant.id ? 'scale(1.05)' : 'scale(1)'
+                        }}
+                      >
+                        <div style={{ fontSize: '30px', textAlign: 'center' }}>{source.icon}</div>
+                        <div style={{ fontSize: '12px', textAlign: 'center', marginTop: '5px' }}>
+                          <strong>{source.name}</strong>
+                        </div>
+                        <div style={{ fontSize: '14px', textAlign: 'center', color: '#4ade80' }}>
+                          {output.toFixed(0)} MW
+                        </div>
+                        {hoveredPlant === plant.id && (
+                          <div style={{ fontSize: '10px', color: '#ff6b6b', marginTop: '5px' }}>
+                            Click to remove
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Grid Monitor */}
+              <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '20px',
+                borderRadius: '10px',
+                marginBottom: '20px'
+              }}>
+                <h3 style={{ margin: '0 0 15px 0' }}>⚡ Grid Monitor</h3>
+                
+                <div style={{ marginBottom: '15px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                    <span>Current Supply:</span>
+                    <strong style={{ color: '#4ade80' }}>{supply.toFixed(0)} MW</strong>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px' }}>
+                    <span>Current Demand:</span>
+                    <strong style={{ color: '#fbbf24' }}>{gameState.demand.toFixed(0)} MW</strong>
+                  </div>
+                </div>
+
+                {/* Supply Bar */}
+                <div style={{ 
+                  width: '100%', 
+                  height: '30px', 
+                  backgroundColor: '#444', 
+                  borderRadius: '5px',
+                  overflow: 'hidden',
+                  marginBottom: '10px'
+                }}>
+                  <div style={{
+                    width: `${Math.min(100, gridBalance)}%`,
+                    height: '100%',
+                    backgroundColor: gridStatus === 'stable' ? '#4ade80' : gridStatus === 'warning' ? '#fbbf24' : '#ef4444',
+                    transition: 'all 0.5s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontWeight: 'bold'
+                  }}>
+                    {gridBalance.toFixed(0)}%
+                  </div>
+                </div>
+
+                <div style={{ 
+                  padding: '10px', 
+                  backgroundColor: gridStatus === 'stable' ? '#064e3b' : gridStatus === 'warning' ? '#78350f' : '#7f1d1d',
+                  borderRadius: '5px',
+                  textAlign: 'center',
+                  fontWeight: 'bold'
+                }}>
+                  {gridStatus === 'stable' ? '✅ GRID STABLE' : gridStatus === 'warning' ? '⚠️ SLIGHT DEFICIT' : '🚨 CRITICAL - BROWNOUT RISK'}
+                </div>
+
+                <div style={{ 
+                  marginTop: '15px', 
+                  display: 'flex', 
+                  justifyContent: 'space-between',
+                  fontSize: '14px'
+                }}>
+                  <div>☁️ CO₂: {co2.toFixed(0)} kg/MWh</div>
+                  <div>🔋 Battery: {batteryCapacity} MWh</div>
+                  <div>⚫ Blackout: {gameState.blackoutTime.toFixed(1)}h</div>
+                </div>
+              </div>
+
+              {/* Build Menu */}
+              <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '20px',
+                borderRadius: '10px'
+              }}>
+                <h3 style={{ margin: '0 0 15px 0' }}>🏗️ Build Menu - Click to Add</h3>
+                <div style={{ 
+                  display: 'flex', 
+                  gap: '10px', 
+                  flexWrap: 'wrap',
+                  justifyContent: 'center'
+                }}>
+                  {Object.entries(powerSources).map(([type, source]) => (
+                    <div
+                      key={type}
+                      onClick={() => buildPowerPlant(type)}
+                      style={{
+                        padding: '15px',
+                        backgroundColor: '#333',
+                        borderRadius: '10px',
+                        border: `3px solid ${source.color}`,
+                        cursor: 'pointer',
+                        textAlign: 'center',
+                        minWidth: '100px',
+                        transition: 'transform 0.2s',
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                      onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                    >
+                      <div style={{ fontSize: '35px' }}>{source.icon}</div>
+                      <div style={{ fontWeight: 'bold', marginTop: '5px' }}>{source.name}</div>
+                      <div style={{ fontSize: '12px', color: '#4ade80' }}>${(source.cost / 1000).toFixed(0)}k</div>
+                      <div style={{ fontSize: '11px', color: '#888' }}>{source.capacity} MW</div>
+                      <div style={{ fontSize: '11px', color: source.co2 > 0 ? '#ef4444' : '#4ade80' }}>
+                        {source.co2} CO₂
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Educational Section */}
+              <div style={{
+                backgroundColor: '#2a2a2a',
+                padding: '25px',
+                borderRadius: '10px',
+                marginTop: '30px',
+                border: '2px solid #4ade80'
+              }}>
+                <h3 style={{ margin: '0 0 15px 0', color: '#4ade80' }}>📚 What You're Learning</h3>
+                
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ color: '#87CEEB', marginBottom: '8px' }}>🌞 The Renewable Energy Challenge</h4>
+                  <p style={{ margin: '0', lineHeight: '1.6', color: '#ccc' }}>
+                    Solar and wind power are clean and increasingly cheap, but they're <strong>intermittent</strong> - 
+                    the sun doesn't shine at night and wind speeds vary. This game simulates the real challenge grid 
+                    operators face: how do we keep the lights on 24/7 when our cleanest energy sources aren't always available?
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ color: '#FFD700', marginBottom: '8px' }}>⚡ Grid Stability Matters</h4>
+                  <p style={{ margin: '0', lineHeight: '1.6', color: '#ccc' }}>
+                    Electricity supply must <strong>exactly match demand</strong> every second. Too little supply causes 
+                    blackouts. This is why fossil fuels have been dominant - they're "dispatchable" (can turn on anytime). 
+                    The energy transition requires solving this through a mix of <strong>energy storage</strong> (batteries), 
+                    <strong>diverse renewable sources</strong> (solar + wind + hydro), and some <strong>baseload power</strong> 
+                    (nuclear, geothermal, or gas as backup).
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ color: '#32CD32', marginBottom: '8px' }}>🔋 Why Storage is Critical</h4>
+                  <p style={{ margin: '0', lineHeight: '1.6', color: '#ccc' }}>
+                    Batteries and other storage technologies are the <strong>missing link</strong> for renewable energy. 
+                    They store excess solar power during the day and release it at night. As battery costs drop (down 90% 
+                    since 2010!), high-renewable grids become increasingly viable. California regularly hits 100% renewable 
+                    electricity during midday thanks to this combination.
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <h4 style={{ color: '#9370DB', marginBottom: '8px' }}>🏭 The Carbon Trade-off</h4>
+                  <p style={{ margin: '0', lineHeight: '1.6', color: '#ccc' }}>
+                    Notice how coal and gas provide reliable power but emit CO₂. In the real world, we need to phase out 
+                    these high-emission sources while maintaining grid reliability. The solution? A <strong>diversified 
+                    energy portfolio</strong> with renewables, storage, nuclear (zero-carbon baseload), and emerging 
+                    technologies like green hydrogen and enhanced geothermal.
+                  </p>
+                </div>
+
+                <div style={{
+                  backgroundColor: '#1a3a1a',
+                  padding: '15px',
+                  borderRadius: '8px',
+                  borderLeft: '4px solid #4ade80'
+                }}>
+                  <strong style={{ color: '#4ade80' }}>💡 Real-World Context:</strong>
+                  <p style={{ margin: '8px 0 0 0', lineHeight: '1.6', fontSize: '14px', color: '#ccc' }}>
+                    Many countries and states are successfully running grids with 40-80% renewable energy right now. 
+                    Denmark gets 80% from wind, Costa Rica runs on 99% renewables, and Scotland generated 113% of its 
+                    electricity needs from renewables in 2023. The technology exists - the challenge is scaling it globally 
+                    and managing the transition fairly and affordably.
+                  </p>
+                </div>
+              </div>
+
+              {/* Game Over */}
+              {gameState.day > 7 && (
+                <div style={{
+                  position: 'fixed',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  backgroundColor: '#1a1a1a',
+                  padding: '40px',
+                  borderRadius: '15px',
+                  border: '3px solid #4ade80',
+                  textAlign: 'center',
+                  zIndex: 1000
+                }}>
+                  <h2>🎉 Game Complete!</h2>
+                  <div style={{ marginTop: '20px', fontSize: '18px' }}>
+                    <div>⚫ Blackout Time: {gameState.blackoutTime.toFixed(1)} hours</div>
+                    <div>☁️ Avg CO₂: {(gameState.totalCO2 / (gameState.day * 24)).toFixed(0)} kg/MWh</div>
+                    <div>💰 Final Budget: ${(gameState.budget / 1000).toFixed(0)}k</div>
+                    <div>🌱 Renewable: {renewablePercent.toFixed(0)}%</div>
+                  </div>
+                  <button 
+                    onClick={() => window.location.reload()}
+                    style={{
+                      marginTop: '20px',
+                      padding: '10px 30px',
+                      fontSize: '16px',
+                      backgroundColor: '#4ade80',
+                      border: 'none',
+                      borderRadius: '5px',
+                      cursor: 'pointer',
+                      color: '#000',
+                      fontWeight: 'bold'
+                    }}
+                  >
+                    Play Again
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        };
+
+        // Render the app
+        ReactDOM.render(<EnergyGridSimulator />, document.getElementById('root'));
+    </script>
+</body>
+</html>
